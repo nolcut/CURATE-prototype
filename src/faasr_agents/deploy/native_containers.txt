@@ -1,0 +1,5 @@
+ghcr.io/faasr/github-actions-python:latest
+ghcr.io/faasr/github-actions-r:latest
+faasr/openwhisk-python:latest
+faasr/openwhisk-tidyverse:latest
+faasr/openwhisk-r:latest

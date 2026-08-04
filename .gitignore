@@ -1,0 +1,33 @@
+# Secrets — never commit these
+.env
+*.env
+
+# Generated artifacts
+faasr_output/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+
+# Editors
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Generated / downloaded / cataloged artifacts
+downloads/
+debug-outputs/
+synthetic_inputs/
+pyadm1/
+tests/
+src/faasr_agents/catalog/data/*.json
+src/faasr_agents/catalog/workflows/*.json
+!src/faasr_agents/catalog/data/.gitkeep
+!src/faasr_agents/catalog/workflows/.gitkeep
