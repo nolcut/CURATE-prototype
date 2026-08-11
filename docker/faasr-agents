@@ -1,0 +1,7 @@
+#!/bin/sh
+# `faasr-agents` inside the container: check credentials first, then hand off to the
+# real console script in the venv. Installed to /usr/local/bin, which the image puts
+# ahead of /app/.venv/bin on PATH so this shadows the console script.
+set -e
+/app/.venv/bin/python3 /usr/local/share/curate/preflight.py "$@"
+exec /app/.venv/bin/faasr-agents "$@"

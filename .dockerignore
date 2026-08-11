@@ -1,0 +1,25 @@
+.venv/
+.env
+*.env
+.git/
+
+# note: these need **/ -- .dockerignore patterns are not recursive on their own
+**/.DS_Store
+**/__pycache__/
+**/*.py[cod]
+
+# runtime output and user-supplied data -- mount these instead of baking them in
+faasr_output/
+downloads/
+debug-outputs/
+synthetic_inputs/
+pyadm1/
+
+# locally saved catalog state -- keep the .gitkeep so the dirs still exist
+src/faasr_agents/catalog/data/*.json
+src/faasr_agents/catalog/workflows/*.json
+
+# not needed by the build (nothing here is COPYed)
+Dockerfile
+.dockerignore
+tests/

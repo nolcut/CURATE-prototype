@@ -31,3 +31,6 @@ src/faasr_agents/catalog/data/*.json
 src/faasr_agents/catalog/workflows/*.json
 !src/faasr_agents/catalog/data/.gitkeep
 !src/faasr_agents/catalog/workflows/.gitkeep
+
+# Paper
+CURATE-paper.pdf
