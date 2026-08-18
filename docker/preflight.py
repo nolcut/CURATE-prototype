@@ -53,11 +53,16 @@ def _set(name: str) -> bool:
 def _problems(argv: list[str]) -> list[tuple[str, str]]:
     found: list[tuple[str, str]] = []
 
-    # LLM credentials. Bedrock is the default; --anthropic-api opts into the
-    # direct Anthropic API and is the ONLY case where ANTHROPIC_API_KEY is used.
-    if "--anthropic-api" in argv:
+    # LLM credentials. Bedrock is the default; --anthropic-api / --openai-api
+    # opt into direct provider APIs and are the only cases where those keys are used.
+    if "--anthropic-api" in argv and "--openai-api" in argv:
+        found.append(("LLM_PROVIDER", "--anthropic-api and --openai-api are mutually exclusive"))
+    elif "--anthropic-api" in argv:
         if not _set("ANTHROPIC_API_KEY"):
             found.append(("ANTHROPIC_API_KEY", "required by --anthropic-api"))
+    elif "--openai-api" in argv:
+        if not _set("OPENAI_API_KEY"):
+            found.append(("OPENAI_API_KEY", "required by --openai-api"))
     elif not (
         _set("BEDROCK_API_KEY")
         or (_set("AWS_ACCESS_KEY_ID") and _set("AWS_SECRET_ACCESS_KEY"))

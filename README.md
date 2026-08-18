@@ -30,8 +30,10 @@ What you will be asked for:
 
 - **LLM credentials.** `BEDROCK_API_KEY` and `AWS_REGION` for AWS Bedrock, the default
   provider. `ANTHROPIC_API_KEY` is optional and only used when you pass
-  `--anthropic-api`. Bedrock also works with ordinary IAM credentials or an AWS profile
-  in the environment instead of a Bedrock API key.
+  `--anthropic-api`. `OPENAI_API_KEY` is optional and only used when you pass
+  `--openai-api`; set `FAASR_OPENAI_MODEL` to override the default OpenAI model.
+  Bedrock also works with ordinary IAM credentials or an AWS profile in the
+  environment instead of a Bedrock API key.
 - **GitHub.** `GH_PAT`, a personal access token with repo and workflow scopes,
   `FAASR_GH_USERNAME`, and `FAASR_ACTION_REPO`, an existing repo where function code and
   Actions workflows are pushed.
@@ -67,6 +69,7 @@ uv run faasr-agents
 - `--sonnet` model tier, the default
 - `--opus` larger model tier
 - `--anthropic-api` use the Anthropic API instead of Bedrock
+- `--openai-api` use the OpenAI API instead of Bedrock
 - `--debug` trace agent tool calls and keep the generated context directory on disk
 
 ## Output
