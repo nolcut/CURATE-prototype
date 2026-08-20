@@ -1,19 +1,22 @@
 from __future__ import annotations
 import asyncio
 import contextlib
+import json
 import os
 import re
+import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions, ResultMessage
 
-from faasr_agents.llm import get_default_model, using_anthropic
-from faasr_agents.pricing import record_sdk_usage
+from faasr_agents.llm import get_default_model, get_llm, using_anthropic, using_openai
+from faasr_agents.pricing import record_sdk_usage, record_usage
 from faasr_agents.models import FunctionSpec, clean_dependencies
 from faasr_agents.state import AgentState
+from faasr_agents.temp_paths import usable_temp_dir
 from faasr_agents.faasr.context_dir import (
     bfs_topological_sort,
     setup_context_directory,
@@ -150,6 +153,199 @@ For EVERY function `<fn>` you are asked to implement:
 Do not modify a previously completed function unless the current turn's spec or
 feedback explicitly requires it.
 """
+
+
+_OPENAI_FGA_SYSTEM = """\
+You are the FaaSr Function Generation Agent. Generate one production-quality Python
+function for a scientific FaaSr workflow step.
+
+Return ONLY a JSON object with this shape:
+{
+  "code": "complete Python source for functions/<fn>.py",
+  "dependencies": ["installable-pypi-package", "..."]
+}
+
+The code must define the requested function with the exact signature. It must call
+FaaSr runtime helpers as bare names: faasr_get_file, faasr_put_file, faasr_log,
+faasr_secret, faasr_rank, and faasr_get_folder_list. Do not import faasr,
+FaaSr_py, or faasr_stubs. Do not use boto3 or raw S3 access. Never fabricate,
+mock, randomize, or hardcode scientific data; if a required external source,
+file, credential, or network resource is unavailable, log and raise.
+"""
+
+
+def _extract_json_object(text) -> dict:
+    """Extract a JSON object from an LLM response."""
+    if isinstance(text, list):
+        text = "\n".join(
+            part.get("text", "")
+            for part in text
+            if isinstance(part, dict) and part.get("type") in ("text", "output_text")
+        )
+    raw = (text or "").strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
+    match = re.search(r"\{.*\}", raw, re.DOTALL)
+    return json.loads(match.group() if match else raw)
+
+
+def _source_snapshot(context_dir: Path, current_name: str) -> str:
+    """Compact code snapshot for neighbors already present in functions/."""
+    parts: list[str] = []
+    for path in sorted((context_dir / "functions").glob("*.py")):
+        if path.name == f"{current_name}.py":
+            continue
+        try:
+            code = path.read_text()
+        except OSError:
+            continue
+        if len(code) > 12_000:
+            code = code[:12_000] + "\n# ... truncated ..."
+        parts.append(f"--- functions/{path.name} ---\n{code}")
+    return "\n\n".join(parts) if parts else "(none)"
+
+
+def _openai_turn_prompt(context_dir: Path, spec: FunctionSpec, feedback: str) -> str:
+    """Build the OpenAI FGA prompt for one function."""
+    signature, test_call = signature_and_test_call(spec)
+    shared = (context_dir / "CONTEXT.md").read_text()
+    node_spec = (context_dir / "specs" / f"{spec.name}.md").read_text()
+    feedback_block = f"\n\nPrevious local test failure to fix:\n{feedback}" if feedback else ""
+    return f"""\
+Shared workflow context:
+{shared}
+
+Function specification:
+{node_spec}
+
+Existing neighboring function code:
+{_source_snapshot(context_dir, spec.name)}
+
+Required exact signature:
+{signature}
+
+Local stub test call that should run:
+{test_call}
+{feedback_block}
+
+Generate the complete implementation for functions/{spec.name}.py and list only the
+third-party PyPI dependencies it imports. Return JSON only.
+"""
+
+
+def _run_stub_test(context_dir: Path, spec: FunctionSpec, timeout: int = 60) -> tuple[bool, str]:
+    """Run the generated function through the local FaaSr stubs."""
+    _, test_call = signature_and_test_call(spec)
+    script = (
+        "import sys\n"
+        "sys.path.insert(0, 'stubs')\n"
+        "from faasr_stubs import faasr_get_file, faasr_put_file, faasr_log, "
+        "faasr_secret, faasr_rank, faasr_get_folder_list\n"
+        f"exec(open('functions/{spec.name}.py').read())\n"
+        f"{test_call}\n"
+    )
+    try:
+        proc = subprocess.run(
+            ["python3", "-c", script],
+            cwd=context_dir,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return False, f"Stub test timed out after {timeout}s\n{exc}"
+    output = "\n".join(part for part in (proc.stdout, proc.stderr) if part)
+    return proc.returncode == 0, output[-6000:]
+
+
+def _module_missing_due_to_reported_dep(test_output: str, deps: list[str]) -> bool:
+    """Treat missing optional generated deps as install-time, not generation-time."""
+    return bool(deps) and "ModuleNotFoundError" in test_output
+
+
+def _implement_all_openai(
+    ordered_nodes: list[FunctionSpec],
+    context_dir: Path,
+    model: str,
+) -> list[FunctionSpec]:
+    """Implement workflow nodes with the selected OpenAI chat model."""
+    implemented: list[FunctionSpec] = []
+    n = len(ordered_nodes)
+    llm = get_llm(model)
+
+    for idx, node in enumerate(ordered_nodes, 1):
+        if node.source in ("catalog", "cached") and node.code:
+            where = "catalog" if node.source == "catalog" else "cached implementation"
+            print(
+                f"  ◌  FGA  [{idx}/{n}] '{node.name}' — reusing from {where}",
+                flush=True,
+            )
+            implemented.append(node)
+            continue
+
+        print(
+            f"  ◌  FGA  [{idx}/{n}] implementing '{node.name}' with OpenAI...",
+            flush=True,
+        )
+
+        test_feedback = ""
+        code = ""
+        deps: list[str] = []
+        for attempt in range(1, 4):
+            response = llm.invoke([
+                SystemMessage(content=_OPENAI_FGA_SYSTEM),
+                HumanMessage(content=_openai_turn_prompt(context_dir, node, test_feedback)),
+            ])
+            record_usage(response, "FGA")
+            try:
+                result = _extract_json_object(response.content)
+            except Exception as exc:
+                test_feedback = f"Your previous response was not valid JSON: {exc}"
+                continue
+
+            code = str(result.get("code") or "").strip()
+            deps = clean_dependencies(result.get("dependencies") or [])
+            if not code:
+                test_feedback = "The JSON did not include non-empty Python source under 'code'."
+                continue
+
+            impl_path = context_dir / "functions" / f"{node.name}.py"
+            impl_path.write_text(code)
+            (context_dir / "functions" / f"{node.name}.deps.txt").write_text(
+                "\n".join(deps) + ("\n" if deps else "")
+            )
+
+            ok, test_output = _run_stub_test(context_dir, node)
+            if ok:
+                break
+            if _module_missing_due_to_reported_dep(test_output, deps):
+                print(
+                    f"       → local stub test needs generated dependency install: {', '.join(deps)}",
+                    flush=True,
+                )
+                break
+            if attempt == 3:
+                raise RuntimeError(
+                    f"OpenAI FGA could not produce a passing stub test for {node.name}.\n"
+                    f"Last output:\n{test_output}"
+                )
+            test_feedback = test_output
+
+        used = _extract_secrets(code)
+        secrets = list(node.secrets) + [s for s in used if s not in node.secrets]
+        done = node.model_copy(update={
+            "code": code,
+            "secrets": secrets,
+            "dependencies": deps,
+        })
+        implemented.append(done)
+
+        n_lines = len(code.splitlines())
+        secrets_note = f" · secrets: {', '.join(secrets)}" if secrets else ""
+        print(f"       → {n_lines} lines{secrets_note}", flush=True)
+
+    return implemented
 
 
 def _turn_prompt(spec: FunctionSpec, first: bool) -> str:
@@ -452,7 +648,6 @@ def fga_node(state: AgentState) -> dict:
     code_feedback = (state.get("code_feedback") or "").strip()
     context_files = state.get("context_files") or []
     user_request = (state.get("user_request") or "").strip()
-    sdk_env = _build_sdk_env()
     model = get_default_model()
 
     ordered_nodes = bfs_topological_sort(spec.nodes, spec.edges)
@@ -460,12 +655,16 @@ def fga_node(state: AgentState) -> dict:
     # In debug mode keep the context dir on disk for post-run inspection
     # (CONTEXT.md, specs/, functions/*.py, test_output/, _trace/); otherwise it is
     # auto-deleted when the with-block exits.
+    temp_root = usable_temp_dir()
     if _debug_enabled():
-        _kept = tempfile.mkdtemp(prefix=f"faasr_fga_{spec.name}_")
+        _kept = tempfile.mkdtemp(prefix=f"faasr_fga_{spec.name}_", dir=temp_root)
         print(f"  ◌  FGA  debug: context dir kept at {_kept}", flush=True)
         dir_ctx = contextlib.nullcontext(_kept)
     else:
-        dir_ctx = tempfile.TemporaryDirectory(prefix=f"faasr_fga_{spec.name}_")
+        dir_ctx = tempfile.TemporaryDirectory(
+            prefix=f"faasr_fga_{spec.name}_",
+            dir=temp_root,
+        )
 
     with dir_ctx as tmpdir:
         context_dir = Path(tmpdir)
@@ -479,9 +678,13 @@ def fga_node(state: AgentState) -> dict:
             feedback=code_feedback,
             user_request=user_request,
         )
-        implemented_nodes = asyncio.run(
-            _implement_all(ordered_nodes, context_dir, model, sdk_env)
-        )
+        if using_openai():
+            implemented_nodes = _implement_all_openai(ordered_nodes, context_dir, model)
+        else:
+            sdk_env = _build_sdk_env()
+            implemented_nodes = asyncio.run(
+                _implement_all(ordered_nodes, context_dir, model, sdk_env)
+            )
 
     # Restore original spec node ordering before returning
     name_to_impl = {n.name: n for n in implemented_nodes}

@@ -17,6 +17,7 @@ OPUS_MODEL_BEDROCK = os.environ.get(
 
 SONNET_MODEL_ANTHROPIC = "claude-sonnet-4-6"
 OPUS_MODEL_ANTHROPIC = "claude-opus-4-8"
+OPENAI_MODEL = os.environ.get("FAASR_OPENAI_MODEL", "gpt-5")
 
 MODELS = {
     "bedrock": {
@@ -27,12 +28,16 @@ MODELS = {
         "sonnet": SONNET_MODEL_ANTHROPIC,
         "opus":   OPUS_MODEL_ANTHROPIC,
     },
+    "openai": {
+        "sonnet": OPENAI_MODEL,
+        "opus":   OPENAI_MODEL,
+    },
 }
 
 selected_tier = "sonnet"
 
-# Provider defaults to Bedrock; "anthropic" is opt-in ONLY via the CLI
-# --anthropic-api flag — ANTHROPIC_API_KEY in the env is never auto-detected.
+# Provider defaults to Bedrock. Direct provider APIs are opt-in ONLY via CLI
+# flags; keys in the env are never auto-detected into a provider switch.
 selected_provider = "bedrock"
 
 
@@ -47,7 +52,7 @@ def set_model_tier(tier: str) -> None:
 
 
 def set_provider(provider: str) -> None:
-    """Select the LLM provider ('bedrock' or 'anthropic') for subsequent get_llm() calls."""
+    """Select the LLM provider for subsequent get_llm() calls."""
     if provider not in MODELS:
         raise ValueError(
             f"Unknown provider '{provider}'; expected one of {sorted(MODELS)}"
@@ -59,6 +64,11 @@ def set_provider(provider: str) -> None:
 def using_anthropic() -> bool:
     """True when the CLI opted into the Anthropic API via --anthropic-api."""
     return selected_provider == "anthropic"
+
+
+def using_openai() -> bool:
+    """True when the CLI opted into the OpenAI API via --openai-api."""
+    return selected_provider == "openai"
 
 
 def get_default_model() -> str:
@@ -118,9 +128,28 @@ def make_anthropic_llm(model: str):
     )
 
 
+def make_openai_llm(model: str):
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "--openai-api was passed but OPENAI_API_KEY is not set. "
+            "Add it to .env (sk-proj-... from platform.openai.com)."
+        )
+    # Imported lazily so Bedrock/Anthropic-only environments don't need it.
+    from langchain_openai import ChatOpenAI
+
+    return ChatOpenAI(
+        model=model,
+        api_key=api_key,
+        max_retries=MAX_RETRIES,
+    )
+
+
 def get_llm(model: str | None = None):
     if model is None:
         model = get_default_model()
     if using_anthropic():
         return make_anthropic_llm(model)
+    if using_openai():
+        return make_openai_llm(model)
     return make_bedrock_llm(model)

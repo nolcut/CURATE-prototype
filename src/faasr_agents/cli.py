@@ -9,6 +9,7 @@ Usage:
 Flags:
     --opus / --sonnet   # model tier (default: sonnet)
     --anthropic-api     # use the Anthropic API (requires ANTHROPIC_API_KEY; default: Bedrock)
+    --openai-api        # use the OpenAI API (requires OPENAI_API_KEY)
     --debug             # trace FGA agent tool calls + keep context dir on disk
 
 The Gate-5 review REPL offers `export <dir>` to write a per-run evaluation
@@ -29,6 +30,8 @@ except ImportError:
 
 from dotenv import load_dotenv
 from langgraph.types import Command
+
+from faasr_agents.temp_paths import usable_temp_dir
 
 load_dotenv()
 
@@ -495,7 +498,13 @@ def _read_description_via_editor():
     if not editor or not sys.stdin.isatty():
         return None
 
-    with tempfile.NamedTemporaryFile("w+", suffix=".txt", delete=False, encoding="utf-8") as f:
+    with tempfile.NamedTemporaryFile(
+        "w+",
+        suffix=".txt",
+        delete=False,
+        encoding="utf-8",
+        dir=usable_temp_dir(),
+    ) as f:
         f.write(_EDITOR_HINT)
         path = f.name
     cmd = [editor]
@@ -682,7 +691,7 @@ def main() -> None:
 
     _banner()
 
-    # Model selection flags: --opus (Opus 4.8) or --sonnet (Sonnet 4.6).
+    # Model selection flags: --opus or --sonnet.
     # Parse and strip them before treating the rest of argv as the request.
     from faasr_agents.llm import set_model_tier, set_provider
 
@@ -694,12 +703,25 @@ def main() -> None:
     elif "--sonnet" in args:
         tier = "sonnet"
 
-    # --anthropic-api opts into the direct Anthropic API. Without the flag the
-    # run is Bedrock-only and ANTHROPIC_API_KEY is never used, even if set.
+    # --anthropic-api / --openai-api opt into direct provider APIs. Without a
+    # provider flag the run is Bedrock-only and other provider keys are ignored.
     anthropic_api = "--anthropic-api" in args
+    openai_api = "--openai-api" in args
+    if anthropic_api and openai_api:
+        print(
+            RED("  Error: choose only one provider flag: --anthropic-api or --openai-api."),
+            file=sys.stderr,
+        )
+        sys.exit(1)
     if anthropic_api and not os.environ.get("ANTHROPIC_API_KEY"):
         print(
             RED("  Error: --anthropic-api requires ANTHROPIC_API_KEY (set it in .env)."),
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if openai_api and not os.environ.get("OPENAI_API_KEY"):
+        print(
+            RED("  Error: --openai-api requires OPENAI_API_KEY (set it in .env)."),
             file=sys.stderr,
         )
         sys.exit(1)
@@ -710,13 +732,17 @@ def main() -> None:
     if debug:
         os.environ["FAASR_DEBUG"] = "1"
 
-    args = [a for a in args if a not in ("--opus", "--sonnet", "--anthropic-api", "--debug")]
+    args = [a for a in args if a not in ("--opus", "--sonnet", "--anthropic-api", "--openai-api", "--debug")]
     set_model_tier(tier)
     if anthropic_api:
         set_provider("anthropic")
+    elif openai_api:
+        set_provider("openai")
     print(f"  {DIM('Model tier: ' + tier)}")
     if anthropic_api:
         print(f"  {DIM('Provider: Anthropic API')}")
+    elif openai_api:
+        print(f"  {DIM('Provider: OpenAI API')}")
     if debug:
         print(f"  {DIM('Debug tracing: on')}")
 

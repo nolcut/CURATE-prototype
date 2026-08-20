@@ -24,6 +24,8 @@ HINTS = {
     "BEDROCK_API_KEY":       "from the Bedrock console — looks like BedrockAPIKey-xxxx (Bedrock is the default provider)",
     "AWS_REGION":            "Bedrock region, e.g. us-east-1",
     "ANTHROPIC_API_KEY":     "sk-ant-... from console.anthropic.com — ONLY used when running with --anthropic-api",
+    "OPENAI_API_KEY":        "sk-proj-... from platform.openai.com — ONLY used when running with --openai-api",
+    "FAASR_OPENAI_MODEL":    "OpenAI model for --openai-api, e.g. gpt-5",
     "GH_PAT":                "github.com → Settings → Developer settings → Personal access tokens (repo + workflow scopes)",
     "FAASR_GH_USERNAME":     "your GitHub username",
     "FAASR_ACTION_REPO":     "repo where FaaSr function code will be pushed (must exist)",
@@ -34,9 +36,10 @@ HINTS = {
     "S3_SecretKey":          "corresponding secret key",
 }
 
-OPTIONAL = {"ANTHROPIC_API_KEY"}
+OPTIONAL = {"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "FAASR_OPENAI_MODEL"}
 DEFAULTS = {
     "AWS_REGION":        "us-east-1",
+    "FAASR_OPENAI_MODEL": "gpt-5",
     "FAASR_S3_ENDPOINT": "https://s3.amazonaws.com",
     "FAASR_S3_REGION":   "us-east-1",
 }
