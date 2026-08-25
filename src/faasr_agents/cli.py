@@ -10,6 +10,7 @@ Flags:
     --opus / --sonnet   # model tier (default: sonnet)
     --anthropic-api     # use the Anthropic API (requires ANTHROPIC_API_KEY; default: Bedrock)
     --openai-api        # use the OpenAI API (requires OPENAI_API_KEY)
+    --opencode          # use OpenCode for function coding/testing (can combine with either API flag)
     --debug             # trace FGA agent tool calls + keep context dir on disk
 
 The Gate-5 review REPL offers `export <dir>` to write a per-run evaluation
@@ -17,6 +18,7 @@ bundle (prompt, workflow, costs, revisions, adaptation decisions, logs).
 """
 from __future__ import annotations
 import os
+import shutil
 import sys
 import uuid
 
@@ -693,7 +695,7 @@ def main() -> None:
 
     # Model selection flags: --opus or --sonnet.
     # Parse and strip them before treating the rest of argv as the request.
-    from faasr_agents.llm import set_model_tier, set_provider
+    from faasr_agents.llm import get_fga_backend, set_fga_backend, set_model_tier, set_provider
 
     args = sys.argv[1:]
 
@@ -703,10 +705,12 @@ def main() -> None:
     elif "--sonnet" in args:
         tier = "sonnet"
 
-    # --anthropic-api / --openai-api opt into direct provider APIs. Without a
-    # provider flag the run is Bedrock-only and other provider keys are ignored.
+    # --anthropic-api / --openai-api select the planning/review LLM provider.
+    # --opencode independently selects the function-coding backend, so it may be
+    # combined with either provider flag. Without a provider flag, planners use Bedrock.
     anthropic_api = "--anthropic-api" in args
     openai_api = "--openai-api" in args
+    opencode = "--opencode" in args
     if anthropic_api and openai_api:
         print(
             RED("  Error: choose only one provider flag: --anthropic-api or --openai-api."),
@@ -725,6 +729,28 @@ def main() -> None:
             file=sys.stderr,
         )
         sys.exit(1)
+    if opencode:
+        opencode_bin = os.environ.get("FAASR_OPENCODE_BIN", "opencode").strip() or "opencode"
+        if shutil.which(opencode_bin) is None:
+            print(
+                RED(
+                    "  Error: --opencode requires the OpenCode CLI. Install it with "
+                    "'brew install anomalyco/tap/opencode' or "
+                    "'npm install -g opencode-ai'."
+                ),
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        opencode_model = os.environ.get("FAASR_OPENCODE_MODEL", "").strip()
+        if opencode_model and "/" not in opencode_model:
+            print(
+                RED(
+                    "  Error: FAASR_OPENCODE_MODEL must use provider/model format "
+                    "(for example, ollama/qwen3-coder)."
+                ),
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     # --debug enables FGA agent tracing (tool calls + order) and keeps the
     # per-function context dir on disk for inspection. Bridged to fga.py via env.
@@ -732,17 +758,33 @@ def main() -> None:
     if debug:
         os.environ["FAASR_DEBUG"] = "1"
 
-    args = [a for a in args if a not in ("--opus", "--sonnet", "--anthropic-api", "--openai-api", "--debug")]
+    args = [a for a in args if a not in (
+        "--opus", "--sonnet", "--anthropic-api", "--openai-api", "--opencode", "--debug",
+    )]
     set_model_tier(tier)
     if anthropic_api:
         set_provider("anthropic")
     elif openai_api:
         set_provider("openai")
+    if opencode:
+        set_fga_backend("opencode")
+    fga_backend = get_fga_backend()
     print(f"  {DIM('Model tier: ' + tier)}")
     if anthropic_api:
         print(f"  {DIM('Provider: Anthropic API')}")
     elif openai_api:
         print(f"  {DIM('Provider: OpenAI API')}")
+    else:
+        print(f"  {DIM('Provider: AWS Bedrock')}")
+    backend_labels = {
+        "claude-code": "Claude Code SDK",
+        "chatopenai": "ChatOpenAI",
+        "opencode": "OpenCode",
+    }
+    print(f"  {DIM('Coding backend: ' + backend_labels[fga_backend])}")
+    if opencode:
+        opencode_model = os.environ.get("FAASR_OPENCODE_MODEL", "").strip()
+        print(f"  {DIM('OpenCode model: ' + (opencode_model or 'configured default'))}")
     if debug:
         print(f"  {DIM('Debug tracing: on')}")
 
@@ -810,7 +852,12 @@ def main() -> None:
             run_dir, state_values, thread_id,
             records=pricing.get_run_records(),
             events=run_export.get_events(),
-            meta={"model_tier": tier, "provider": selected_provider, "debug": debug},
+            meta={
+                "model_tier": tier,
+                "provider": selected_provider,
+                "fga_backend": fga_backend,
+                "debug": debug,
+            },
         )
 
     current_input = initial_state

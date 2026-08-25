@@ -140,8 +140,9 @@ class UsageRecord(BaseModel):
 
     source="tokens": cost derived from token counts × per-model price
     (WCA/FCA/WDA, via LangChain usage_metadata).
-    source="sdk": exact provider-computed cost from the Claude Agent SDK
-    (FGA's code-generation step). See faasr_agents.pricing.
+    source="sdk": exact provider-computed cost from the Claude Agent SDK.
+    source="opencode": usage and cost reported by the OpenCode event stream.
+    See faasr_agents.pricing.
     """
     agent: str  # "WCA" | "FCA" | "FGA" | "WDA"
     model: str = ""
@@ -150,7 +151,7 @@ class UsageRecord(BaseModel):
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
     cost_usd: float = 0.0
-    source: Literal["tokens", "sdk"] = "tokens"
+    source: Literal["tokens", "sdk", "opencode"] = "tokens"
 
 
 class WorkflowEntry(BaseModel):

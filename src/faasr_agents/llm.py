@@ -40,6 +40,12 @@ selected_tier = "sonnet"
 # flags; keys in the env are never auto-detected into a provider switch.
 selected_provider = "bedrock"
 
+# The function-generation backend is independent from the LLM provider used by
+# WCA/FCA/WDA. "auto" preserves the historical behavior: OpenAI uses the small
+# ChatOpenAI generation loop; Bedrock and Anthropic use Claude Code SDK.
+FGA_BACKENDS = {"auto", "claude-code", "chatopenai", "opencode"}
+selected_fga_backend = "auto"
+
 
 def set_model_tier(tier: str) -> None:
     """Select the model tier ('opus' or 'sonnet') for subsequent get_llm() calls."""
@@ -61,6 +67,23 @@ def set_provider(provider: str) -> None:
     selected_provider = provider
 
 
+def set_fga_backend(backend: str) -> None:
+    """Select the coding-agent backend used by the Function Generation Agent."""
+    if backend not in FGA_BACKENDS:
+        raise ValueError(
+            f"Unknown FGA backend '{backend}'; expected one of {sorted(FGA_BACKENDS)}"
+        )
+    global selected_fga_backend
+    selected_fga_backend = backend
+
+
+def get_fga_backend() -> str:
+    """Resolve the explicit backend or the provider-compatible legacy default."""
+    if selected_fga_backend != "auto":
+        return selected_fga_backend
+    return "chatopenai" if selected_provider == "openai" else "claude-code"
+
+
 def using_anthropic() -> bool:
     """True when the CLI opted into the Anthropic API via --anthropic-api."""
     return selected_provider == "anthropic"
@@ -69,6 +92,11 @@ def using_anthropic() -> bool:
 def using_openai() -> bool:
     """True when the CLI opted into the OpenAI API via --openai-api."""
     return selected_provider == "openai"
+
+
+def using_opencode() -> bool:
+    """True when OpenCode was selected as the function-generation backend."""
+    return get_fga_backend() == "opencode"
 
 
 def get_default_model() -> str:

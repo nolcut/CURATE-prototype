@@ -4,6 +4,7 @@ import contextlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
@@ -12,8 +13,8 @@ from pathlib import Path
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions, ResultMessage
 
-from faasr_agents.llm import get_default_model, get_llm, using_anthropic, using_openai
-from faasr_agents.pricing import record_sdk_usage, record_usage
+from faasr_agents.llm import get_default_model, get_fga_backend, get_llm, using_anthropic
+from faasr_agents.pricing import record_opencode_usage, record_sdk_usage, record_usage
 from faasr_agents.models import FunctionSpec, clean_dependencies
 from faasr_agents.state import AgentState
 from faasr_agents.temp_paths import usable_temp_dir
@@ -348,6 +349,313 @@ def _implement_all_openai(
     return implemented
 
 
+_OPENCODE_AGENT = "faasr-fga"
+_OPENCODE_HIDDEN_ENV = {
+    # The coding agent works only on a temporary context copy. It does not need
+    # CURATE's deployment or workflow-data credentials.
+    "GH_PAT",
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "S3_AccessKey",
+    "S3_SecretKey",
+}
+
+
+def _opencode_binary() -> str:
+    configured = os.environ.get("FAASR_OPENCODE_BIN", "opencode").strip() or "opencode"
+    resolved = shutil.which(configured)
+    if resolved is None:
+        raise RuntimeError(
+            "--opencode requires the OpenCode CLI. Install it with "
+            "`brew install anomalyco/tap/opencode` (macOS/Linux) or "
+            "`npm install -g opencode-ai`, then configure a provider or select "
+            "an `ollama/...` model."
+        )
+    return resolved
+
+
+def _opencode_model() -> str | None:
+    model = os.environ.get("FAASR_OPENCODE_MODEL", "").strip()
+    if model and "/" not in model:
+        raise RuntimeError(
+            "FAASR_OPENCODE_MODEL must use OpenCode's provider/model format "
+            "(for example, ollama/qwen3-coder)."
+        )
+    return model or None
+
+
+def _opencode_timeout() -> int:
+    raw = os.environ.get("FAASR_OPENCODE_TIMEOUT", "600")
+    try:
+        timeout = int(raw)
+    except ValueError as exc:
+        raise RuntimeError("FAASR_OPENCODE_TIMEOUT must be an integer number of seconds.") from exc
+    if timeout < 1:
+        raise RuntimeError("FAASR_OPENCODE_TIMEOUT must be at least 1 second.")
+    return timeout
+
+
+def _opencode_config_content() -> str:
+    """Add a scoped CURATE agent while preserving the user's inline provider config."""
+    raw = os.environ.get("OPENCODE_CONFIG_CONTENT", "").strip()
+    if raw:
+        try:
+            config = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"OPENCODE_CONFIG_CONTENT is not valid JSON: {exc}") from exc
+        if not isinstance(config, dict):
+            raise RuntimeError("OPENCODE_CONFIG_CONTENT must contain a JSON object.")
+    else:
+        config = {}
+
+    model = _opencode_model()
+    if model and model.startswith("ollama/"):
+        model_id = model.split("/", 1)[1]
+        providers = config.get("provider")
+        if providers is not None and not isinstance(providers, dict):
+            raise RuntimeError("OPENCODE_CONFIG_CONTENT.provider must be a JSON object.")
+        providers = dict(providers or {})
+
+        ollama = providers.get("ollama")
+        if ollama is not None and not isinstance(ollama, dict):
+            raise RuntimeError(
+                "OPENCODE_CONFIG_CONTENT.provider.ollama must be a JSON object."
+            )
+        ollama = dict(ollama or {})
+        ollama.setdefault("npm", "@ai-sdk/openai-compatible")
+        ollama.setdefault("name", "Ollama")
+
+        options = ollama.get("options")
+        if options is not None and not isinstance(options, dict):
+            raise RuntimeError(
+                "OPENCODE_CONFIG_CONTENT.provider.ollama.options must be a JSON object."
+            )
+        options = dict(options or {})
+        options.setdefault(
+            "baseURL",
+            os.environ.get(
+                "FAASR_OLLAMA_BASE_URL", "http://127.0.0.1:11434/v1"
+            ).strip()
+            or "http://127.0.0.1:11434/v1",
+        )
+        ollama["options"] = options
+
+        models = ollama.get("models")
+        if models is not None and not isinstance(models, dict):
+            raise RuntimeError(
+                "OPENCODE_CONFIG_CONTENT.provider.ollama.models must be a JSON object."
+            )
+        models = dict(models or {})
+        model_config = models.get(model_id)
+        if model_config is not None and not isinstance(model_config, dict):
+            raise RuntimeError(
+                f"OpenCode configuration for Ollama model {model_id!r} must be a JSON object."
+            )
+        model_config = dict(model_config or {})
+        model_config.setdefault("name", model_id)
+        limits = model_config.get("limit")
+        if limits is not None and not isinstance(limits, dict):
+            raise RuntimeError(
+                f"OpenCode limits for Ollama model {model_id!r} must be a JSON object."
+            )
+        limits = dict(limits or {})
+        limits.setdefault("context", 65536)
+        limits.setdefault("output", 8192)
+        model_config["limit"] = limits
+        models[model_id] = model_config
+        ollama["models"] = models
+        providers["ollama"] = ollama
+        config["provider"] = providers
+
+    agents = config.get("agent")
+    if agents is not None and not isinstance(agents, dict):
+        raise RuntimeError("OPENCODE_CONFIG_CONTENT.agent must be a JSON object.")
+    agents = dict(agents or {})
+    agents[_OPENCODE_AGENT] = {
+        "description": "Implement and locally verify one CURATE FaaSr function.",
+        "mode": "primary",
+        "prompt": _SHARED_RULES,
+        "permission": {
+            "*": "deny",
+            "read": "allow",
+            "edit": "allow",
+            "glob": "allow",
+            "grep": "allow",
+            "list": "allow",
+            "bash": "allow",
+            "external_directory": "deny",
+        },
+    }
+    config["agent"] = agents
+    config.setdefault("$schema", "https://opencode.ai/config.json")
+    return json.dumps(config)
+
+
+def _opencode_env() -> dict[str, str]:
+    env = os.environ.copy()
+    for key in _OPENCODE_HIDDEN_ENV:
+        env.pop(key, None)
+    env["OPENCODE_CONFIG_CONTENT"] = _opencode_config_content()
+    return env
+
+
+def _record_opencode_events(output: str, model: str) -> None:
+    """Best-effort usage capture from `opencode run --format json` JSONL."""
+    for line in output.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict) or event.get("type") != "step_finish":
+            continue
+        part = event.get("part") or {}
+        tokens = part.get("tokens") or {}
+        cache = tokens.get("cache") or {}
+        record_opencode_usage(
+            agent="FGA",
+            model=model,
+            input_tokens=int(tokens.get("input", 0) or 0),
+            output_tokens=int(tokens.get("output", 0) or 0),
+            cache_read_tokens=int(cache.get("read", 0) or 0),
+            cache_write_tokens=int(cache.get("write", 0) or 0),
+            cost_usd=float(part.get("cost", 0.0) or 0.0),
+        )
+
+
+def _run_opencode_turn(
+    context_dir: Path,
+    spec: FunctionSpec,
+    prompt: str,
+    attempt: int,
+) -> None:
+    binary = _opencode_binary()
+    model = _opencode_model()
+    command = [
+        binary,
+        "run",
+        "--format",
+        "json",
+        "--agent",
+        _OPENCODE_AGENT,
+        "--dir",
+        str(context_dir),
+        "--title",
+        f"CURATE FGA: {spec.name}",
+    ]
+    if model:
+        command.extend(["--model", model])
+    command.append(prompt)
+
+    try:
+        proc = subprocess.run(
+            command,
+            cwd=context_dir,
+            env=_opencode_env(),
+            capture_output=True,
+            text=True,
+            timeout=_opencode_timeout(),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"OpenCode timed out after {_opencode_timeout()} seconds while implementing "
+            f"{spec.name}. Increase FAASR_OPENCODE_TIMEOUT if this model is slow."
+        ) from exc
+
+    model_label = model or "opencode/default"
+    _record_opencode_events(proc.stdout, model_label)
+    if _debug_enabled():
+        trace_dir = context_dir / "_trace"
+        trace_dir.mkdir(exist_ok=True)
+        (trace_dir / f"{spec.name}.opencode.{attempt}.jsonl").write_text(
+            proc.stdout + (f"\n--- stderr ---\n{proc.stderr}" if proc.stderr else "")
+        )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "No output from OpenCode.")[-6000:]
+        raise RuntimeError(
+            f"OpenCode failed while implementing {spec.name} (exit {proc.returncode}).\n"
+            f"{detail}"
+        )
+
+
+def _implement_all_opencode(
+    ordered_nodes: list[FunctionSpec],
+    context_dir: Path,
+) -> list[FunctionSpec]:
+    """Implement workflow nodes with OpenCode's tool-using coding agent."""
+    implemented: list[FunctionSpec] = []
+    n = len(ordered_nodes)
+    model_label = _opencode_model() or "configured default"
+
+    for idx, node in enumerate(ordered_nodes, 1):
+        if node.source in ("catalog", "cached") and node.code:
+            where = "catalog" if node.source == "catalog" else "cached implementation"
+            print(
+                f"  ◌  FGA  [{idx}/{n}] '{node.name}' — reusing from {where}",
+                flush=True,
+            )
+            implemented.append(node)
+            continue
+
+        print(
+            f"  ◌  FGA  [{idx}/{n}] implementing '{node.name}' with OpenCode "
+            f"({model_label})...",
+            flush=True,
+        )
+
+        test_feedback = ""
+        code = ""
+        deps: list[str] = []
+        for attempt in range(1, 4):
+            prompt = _turn_prompt(node, first=True)
+            if test_feedback:
+                prompt += (
+                    "\nCURATE independently reran the required stub test after your last "
+                    "attempt and it failed. Inspect the current files, fix the function, and "
+                    f"run the test again. Failure output:\n{test_feedback}\n"
+                )
+            _run_opencode_turn(context_dir, node, prompt, attempt)
+
+            impl_path = context_dir / "functions" / f"{node.name}.py"
+            if not impl_path.exists():
+                test_feedback = f"OpenCode did not create functions/{node.name}.py."
+                if attempt == 3:
+                    raise RuntimeError(test_feedback)
+                continue
+
+            code = impl_path.read_text()
+            deps = _read_reported_deps(context_dir, node.name)
+            ok, test_output = _run_stub_test(context_dir, node)
+            if ok:
+                break
+            if _module_missing_due_to_reported_dep(test_output, deps):
+                print(
+                    f"       → local stub test needs generated dependency install: "
+                    f"{', '.join(deps)}",
+                    flush=True,
+                )
+                break
+            if attempt == 3:
+                raise RuntimeError(
+                    f"OpenCode FGA could not produce a passing stub test for {node.name}.\n"
+                    f"Last output:\n{test_output}"
+                )
+            test_feedback = test_output[-6000:]
+
+        used = _extract_secrets(code)
+        secrets = list(node.secrets) + [s for s in used if s not in node.secrets]
+        implemented.append(node.model_copy(update={
+            "code": code,
+            "secrets": secrets,
+            "dependencies": deps,
+        }))
+
+        n_lines = len(code.splitlines())
+        secrets_note = f" · secrets: {', '.join(secrets)}" if secrets else ""
+        print(f"       → {n_lines} lines{secrets_note}", flush=True)
+
+    return implemented
+
+
 def _turn_prompt(spec: FunctionSpec, first: bool) -> str:
     """Build the small per-function turn prompt (shared rules live in the system prompt)."""
     fn = spec.name
@@ -631,7 +939,7 @@ def _extract_secrets(code: str) -> list[str]:
 
 def fga_node(state: AgentState) -> dict:
     """
-    Function Generation Agent node — single-session Claude Agent SDK edition.
+    Function Generation Agent node with pluggable coding-agent backends.
 
     Builds the complete context directory once (shared CONTEXT.md, per-node
     specs/<fn>.md, FaaSr stubs, seeded functions/ and test_data/), then runs ONE
@@ -678,13 +986,18 @@ def fga_node(state: AgentState) -> dict:
             feedback=code_feedback,
             user_request=user_request,
         )
-        if using_openai():
+        backend = get_fga_backend()
+        if backend == "opencode":
+            implemented_nodes = _implement_all_opencode(ordered_nodes, context_dir)
+        elif backend == "chatopenai":
             implemented_nodes = _implement_all_openai(ordered_nodes, context_dir, model)
-        else:
+        elif backend == "claude-code":
             sdk_env = _build_sdk_env()
             implemented_nodes = asyncio.run(
                 _implement_all(ordered_nodes, context_dir, model, sdk_env)
             )
+        else:  # Defensive: set_fga_backend validates before execution.
+            raise RuntimeError(f"Unsupported FGA backend: {backend}")
 
     # Restore original spec node ordering before returning
     name_to_impl = {n.name: n for n in implemented_nodes}
