@@ -1,4 +1,5 @@
 from __future__ import annotations
+import ast
 import asyncio
 import contextlib
 import json
@@ -237,6 +238,26 @@ third-party PyPI dependencies it imports. Return JSON only.
 
 def _run_stub_test(context_dir: Path, spec: FunctionSpec, timeout: int = 60) -> tuple[bool, str]:
     """Run the generated function through the local FaaSr stubs."""
+    impl_path = context_dir / "functions" / f"{spec.name}.py"
+    if spec.outputs and impl_path.exists():
+        try:
+            tree = ast.parse(impl_path.read_text())
+        except SyntaxError as exc:
+            return False, f"Generated function is not valid Python: {exc}"
+        uploads = sum(
+            1
+            for item in ast.walk(tree)
+            if isinstance(item, ast.Call)
+            and isinstance(item.func, ast.Name)
+            and item.func.id == "faasr_put_file"
+        )
+        if uploads < len(spec.outputs):
+            return False, (
+                f"The function declares {len(spec.outputs)} output file(s), but contains "
+                f"only {uploads} faasr_put_file call(s). Write each output locally and "
+                "upload it with faasr_put_file so it survives the serverless invocation."
+            )
+
     _, test_call = signature_and_test_call(spec)
     script = (
         "import sys\n"

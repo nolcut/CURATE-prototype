@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from faasr_agents import llm, pricing
 from faasr_agents.agents import fga
-from faasr_agents.models import FunctionSpec
+from faasr_agents.models import FunctionSpec, IOSpec
 
 
 class BackendSelectionTests(unittest.TestCase):
@@ -243,6 +243,26 @@ class OpenCodeRunnerTests(unittest.TestCase):
         self.assertEqual(run.call_count, 2)
         self.assertIn("AssertionError: wrong output", prompts[1])
         self.assertIn("def make_plot", result[0].code or "")
+
+    def test_stub_test_rejects_declared_output_without_s3_upload(self):
+        spec = FunctionSpec(
+            name="make_summary",
+            outputs=[IOSpec(name="summary.json", type="json")],
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            context_dir = Path(tmpdir)
+            functions = context_dir / "functions"
+            functions.mkdir()
+            (functions / "make_summary.py").write_text(
+                "def make_summary(folder, output1):\n"
+                "    open(output1, 'w').write('{}')\n"
+            )
+
+            ok, feedback = fga._run_stub_test(context_dir, spec)
+
+        self.assertFalse(ok)
+        self.assertIn("faasr_put_file", feedback)
 
 
 if __name__ == "__main__":
