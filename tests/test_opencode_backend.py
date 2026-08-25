@@ -79,8 +79,24 @@ class OpenCodeConfigurationTests(unittest.TestCase):
         self.assertEqual(provider["npm"], "@ai-sdk/openai-compatible")
         self.assertEqual(provider["options"]["baseURL"], "http://localhost:11434/v1")
         model = provider["models"]["curate-ornith:9b"]
+        self.assertEqual(model["options"]["reasoningEffort"], "none")
         self.assertEqual(model["limit"]["context"], 65536)
         self.assertEqual(model["limit"]["output"], 8192)
+
+    def test_ollama_reasoning_effort_can_be_overridden(self):
+        with patch.dict(
+            os.environ,
+            {
+                "FAASR_OPENCODE_MODEL": "ollama/local-model",
+                "FAASR_OPENCODE_REASONING_EFFORT": "low",
+                "OPENCODE_CONFIG_CONTENT": "{}",
+            },
+            clear=False,
+        ):
+            config = json.loads(fga._opencode_config_content())
+
+        model = config["provider"]["ollama"]["models"]["local-model"]
+        self.assertEqual(model["options"]["reasoningEffort"], "low")
 
     def test_subprocess_environment_hides_deployment_secrets(self):
         values = {

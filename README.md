@@ -94,7 +94,10 @@ FAASR_OPENCODE_MODEL=ollama/curate-ornith:9b uv run faasr-agents --opencode
 
 Ollama defaults to `http://127.0.0.1:11434/v1`. Set `FAASR_OLLAMA_BASE_URL` when
 the server is elsewhere, such as `http://host.docker.internal:11434/v1` when
-CURATE runs in Docker on macOS.
+CURATE runs in Docker on macOS. CURATE sets Ollama reasoning effort to `none` by
+default because reasoning-capable local models can otherwise spend minutes thinking
+between tool calls. Set `FAASR_OPENCODE_REASONING_EFFORT` to another supported value
+when deeper local reasoning is worth the added latency.
 
 
 ### Flags

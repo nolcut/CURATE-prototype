@@ -453,6 +453,18 @@ def _opencode_config_content() -> str:
             )
         model_config = dict(model_config or {})
         model_config.setdefault("name", model_id)
+        model_options = model_config.get("options")
+        if model_options is not None and not isinstance(model_options, dict):
+            raise RuntimeError(
+                f"OpenCode options for Ollama model {model_id!r} must be a JSON object."
+            )
+        model_options = dict(model_options or {})
+        reasoning_effort = os.environ.get(
+            "FAASR_OPENCODE_REASONING_EFFORT", "none"
+        ).strip()
+        if reasoning_effort:
+            model_options.setdefault("reasoningEffort", reasoning_effort)
+        model_config["options"] = model_options
         limits = model_config.get("limit")
         if limits is not None and not isinstance(limits, dict):
             raise RuntimeError(
