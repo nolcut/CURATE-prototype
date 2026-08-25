@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
+from faasr_agents.deploy import register_workflow
 from faasr_agents.faasr.emit import emit_faasr_json
 from faasr_agents.faasr.validate import validate_faasr_json
 from faasr_agents.models import FunctionSpec, IOSpec, WorkflowSpec
@@ -43,6 +45,20 @@ class FaaSrValidationTests(unittest.TestCase):
 
         self.assertFalse(valid)
         self.assertIn("FunctionInvoke", error or "")
+
+    def test_registration_accepts_single_terminal_action(self):
+        workflow = emit_faasr_json(
+            WorkflowSpec(
+                name="local_function_test",
+                entry="calculate_number_summary",
+                nodes=[FunctionSpec(name="calculate_number_summary")],
+            )
+        )
+
+        with patch.object(register_workflow, "deploy_to_github") as deploy:
+            register_workflow.main(workflow_data=workflow)
+
+        deploy.assert_called_once()
 
 
 if __name__ == "__main__":
