@@ -556,6 +556,14 @@ def _run_opencode_turn(
             timeout=_opencode_timeout(),
         )
     except subprocess.TimeoutExpired as exc:
+        impl_path = context_dir / "functions" / f"{spec.name}.py"
+        if impl_path.is_file() and impl_path.stat().st_size:
+            print(
+                f"       -> OpenCode reached the {_opencode_timeout()}s limit after "
+                "writing the function; CURATE will verify that implementation.",
+                flush=True,
+            )
+            return
         raise RuntimeError(
             f"OpenCode timed out after {_opencode_timeout()} seconds while implementing "
             f"{spec.name}. Increase FAASR_OPENCODE_TIMEOUT if this model is slow."
@@ -692,11 +700,14 @@ def _turn_prompt(spec: FunctionSpec, first: bool) -> str:
         + f"Read specs/{fn}.md for its full specification.\n"
         + f"- Signature must be exactly: `{signature}`\n"
         + rank_rule
+        + "- Work only inside the current OpenCode workspace. Use relative paths such as "
+        + f"functions/{fn}.py; never use `/root/repo` or another absolute path.\n"
         + f"- Write the implementation to functions/{fn}.py.\n"
-        + "- Validate it through the stubs per the testing rules, with:\n"
-        + f"    {test_call}\n"
-        + f"- Then write functions/{fn}.deps.txt (third-party PyPI packages, one per "
+        + f"- Write functions/{fn}.deps.txt before testing (third-party PyPI packages, one per "
         + "line; empty file if none).\n"
+        + "- Validate it through the stubs per the testing rules, with exactly this call:\n"
+        + f"    {test_call}\n"
+        + "- When that test passes, stop immediately. Do not inspect other output paths.\n"
     )
 
     if spec.source == "user_provided" and spec.user_model_mode == "verbatim":

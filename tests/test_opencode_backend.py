@@ -158,6 +158,46 @@ class OpenCodeRunnerTests(unittest.TestCase):
         self.assertEqual(records[0].cache_read_tokens, 60)
         self.assertAlmostEqual(records[0].cost_usd, 0.012)
 
+    def test_timeout_keeps_a_function_that_opencode_already_wrote(self):
+        spec = FunctionSpec(name="make_plot")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            context_dir = Path(tmpdir)
+            functions = context_dir / "functions"
+            functions.mkdir()
+
+            def timeout_after_write(*args, **kwargs):
+                (functions / "make_plot.py").write_text(
+                    "def make_plot(folder='workflow_data'):\n    return None\n"
+                )
+                raise subprocess.TimeoutExpired(cmd=args[0], timeout=600)
+
+            with (
+                patch.dict(
+                    os.environ,
+                    {"FAASR_OPENCODE_MODEL": "ollama/curate-ornith:9b"},
+                    clear=False,
+                ),
+                patch.object(fga, "_opencode_binary", return_value="/usr/bin/opencode"),
+                patch.object(fga.subprocess, "run", side_effect=timeout_after_write),
+            ):
+                fga._run_opencode_turn(context_dir, spec, "implement it", 1)
+
+    def test_timeout_without_a_function_still_fails(self):
+        spec = FunctionSpec(name="make_plot")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with (
+                patch.object(fga, "_opencode_binary", return_value="/usr/bin/opencode"),
+                patch.object(
+                    fga.subprocess,
+                    "run",
+                    side_effect=subprocess.TimeoutExpired(cmd="opencode", timeout=600),
+                ),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "timed out"):
+                    fga._run_opencode_turn(Path(tmpdir), spec, "implement it", 1)
+
     def test_failed_stub_test_is_returned_for_one_repair_attempt(self):
         spec = FunctionSpec(name="make_plot")
         prompts: list[str] = []
