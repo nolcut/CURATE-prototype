@@ -118,10 +118,63 @@ uv run faasr-agents --anthropic-api --opencode
 FAASR_OPENCODE_MODEL=ollama/curate-ornith:9b uv run faasr-agents --opencode
 ```
 
-When `FAASR_OPENCODE_MODEL` is blank, OpenCode uses its configured default model.
-CURATE gives OpenCode a temporary function workspace, lets it read/edit/run tests
-there, and independently reruns the FaaSr stub test. A failed test is returned to
-OpenCode for up to three repair attempts before Gate 3.
+### OpenCode architecture
+
+OpenCode is an alternative backend for the Function Generation Agent (FGA); it
+does not replace CURATE's planning, approval, deployment, or output-review agents.
+The responsibilities are split as follows:
+
+```text
+Bedrock or Anthropic
+  -> designs the workflow and data-flow DAG
+  -> selects, adapts, and reviews function specifications
+  -> handles deployment coordination and output review
+
+OpenCode + its selected model (for example, local Ollama)
+  -> writes the Python function implementations
+  -> runs them against CURATE's local FaaSr stubs
+  -> repairs a function when local validation fails
+```
+
+The end-to-end flow is:
+
+```text
+User request
+    |
+    v
+Workflow and function planning (Bedrock by default, or Anthropic)
+    |
+    v
+Function Generation Agent
+    |-- default: Claude Code SDK
+    `-- --opencode: OpenCode -> configured provider/model
+    |
+    v
+Independent FaaSr stub test -> repair loop (up to three attempts)
+    |
+    v
+Gate 3 human code approval
+    |
+    v
+Existing GitHub Actions deployment and Gate 5 output review
+```
+
+`FAASR_OPENCODE_MODEL` accepts any model identifier supported by the user's
+OpenCode installation, in `provider/model` form. This makes the coding step
+independent of the planning provider: for example, Bedrock can plan the workflow
+while `ollama/curate-ornith:9b` writes the functions locally. When no model is set,
+OpenCode uses its configured default.
+
+For each generated function, CURATE creates a temporary workspace containing the
+workflow context, function specification, neighboring code, test data, and FaaSr
+stubs. OpenCode can edit and run commands only in that workspace. CURATE removes
+GitHub and S3 deployment credentials from the OpenCode subprocess, independently
+reruns the required stub test, and sends failures back for repair. After approval,
+the existing deployment code, not OpenCode, uploads and invokes the workflow.
+
+Because the other CURATE agents still use Bedrock or Anthropic, a complete
+`faasr-agents --opencode` run requires one of those planner credentials. A direct
+OpenCode/Ollama function-generation test does not require them.
 
 ## Output
 
