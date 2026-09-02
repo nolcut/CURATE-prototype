@@ -13,11 +13,23 @@ def clean_dependencies(deps) -> list[str]:
     Dedupes, preserving order.
     """
     _runtime = {"faasr", "faasr_py", "faasrpy"}
+    _empty_markers = {
+        "n/a",
+        "no dependencies",
+        "no dependency",
+        "none",
+        "not applicable",
+        "standard library only",
+        "stdlib only",
+    }
     _stdlib = set(sys.stdlib_module_names)
     out: list[str] = []
     for raw in deps or []:
         name = str(raw).strip()
         if not name:
+            continue
+        marker = " ".join(name.lower().replace("-", " ").replace("_", " ").split())
+        if marker in _empty_markers:
             continue
         base = name.lower().replace("-", "_")
         if base in _runtime or base in _stdlib:
@@ -140,8 +152,9 @@ class UsageRecord(BaseModel):
 
     source="tokens": cost derived from token counts × per-model price
     (WCA/FCA/WDA, via LangChain usage_metadata).
-    source="sdk": exact provider-computed cost from the Claude Agent SDK
-    (FGA's code-generation step). See faasr_agents.pricing.
+    source="sdk": exact provider-computed cost from the Claude Agent SDK.
+    source="opencode": usage and cost reported by the OpenCode event stream.
+    See faasr_agents.pricing.
     """
     agent: str  # "WCA" | "FCA" | "FGA" | "WDA"
     model: str = ""
@@ -150,7 +163,7 @@ class UsageRecord(BaseModel):
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
     cost_usd: float = 0.0
-    source: Literal["tokens", "sdk"] = "tokens"
+    source: Literal["tokens", "sdk", "opencode"] = "tokens"
 
 
 class WorkflowEntry(BaseModel):

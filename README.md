@@ -30,8 +30,12 @@ What you will be asked for:
 
 - **LLM credentials.** `BEDROCK_API_KEY` and `AWS_REGION` for AWS Bedrock, the default
   provider. `ANTHROPIC_API_KEY` is optional and only used when you pass
-  `--anthropic-api`. Bedrock also works with ordinary IAM credentials or an AWS profile
-  in the environment instead of a Bedrock API key.
+  `--anthropic-api`. `FAASR_OPENCODE_MODEL` optionally selects the model used by
+  OpenCode during function generation, using OpenCode's `provider/model` format.
+  For an `ollama/...` model, `FAASR_OLLAMA_BASE_URL` selects the Ollama endpoint
+  and defaults to the local server.
+  Bedrock also works with ordinary IAM credentials or an AWS profile in the
+  environment instead of a Bedrock API key.
 - **GitHub.** `GH_PAT`, a personal access token with repo and workflow scopes,
   `FAASR_GH_USERNAME`, and `FAASR_ACTION_REPO`, an existing repo where function code and
   Actions workflows are pushed.
@@ -61,13 +65,116 @@ uv sync
 uv run faasr-agents
 ```
 
+To use OpenCode as the function-coding agent, install and configure its CLI first:
+
+```sh
+brew install anomalyco/tap/opencode
+opencode auth login
+opencode models
+```
+
+`npm install -g opencode-ai` is an alternative installation method. OpenCode can
+use hosted providers or local/open-source models exposed through Ollama, LM Studio,
+NVIDIA NIM, or another supported endpoint. Configure that provider in OpenCode,
+then put the exact model name reported by `opencode models` in
+`FAASR_OPENCODE_MODEL`.
+
+For a local Ollama model, CURATE automatically adds the OpenCode provider when
+`FAASR_OPENCODE_MODEL` begins with `ollama/`. Coding agents need at least a 64K
+context window. This tested setup uses the 9B Ornith coding model and reuses its
+downloaded weights in a CURATE-specific model alias:
+
+```sh
+ollama pull ornith:9b
+ollama create curate-ornith:9b -f examples/ollama/ornith-9b.Modelfile
+FAASR_OPENCODE_MODEL=ollama/curate-ornith:9b uv run faasr-agents --opencode
+```
+
+Ollama defaults to `http://127.0.0.1:11434/v1`. Set `FAASR_OLLAMA_BASE_URL` when
+the server is elsewhere, such as `http://host.docker.internal:11434/v1` when
+CURATE runs in Docker on macOS. CURATE sets Ollama reasoning effort to `none` by
+default because reasoning-capable local models can otherwise spend minutes thinking
+between tool calls. Set `FAASR_OPENCODE_REASONING_EFFORT` to another supported value
+when deeper local reasoning is worth the added latency.
+
 
 ### Flags
 
 - `--sonnet` model tier, the default
 - `--opus` larger model tier
 - `--anthropic-api` use the Anthropic API instead of Bedrock
+- `--opencode` use OpenCode for function generation, editing, and local stub testing
 - `--debug` trace agent tool calls and keep the generated context directory on disk
+
+The provider flag controls CURATE's workflow planning and review agents. The
+`--opencode` flag independently controls the function-coding agent, so they can be
+combined:
+
+```sh
+# Anthropic for planning/review; OpenCode's configured model for function coding
+uv run faasr-agents --anthropic-api --opencode
+
+# Bedrock for planning/review; a local Ollama model for coding
+FAASR_OPENCODE_MODEL=ollama/curate-ornith:9b uv run faasr-agents --opencode
+```
+
+### OpenCode architecture
+
+OpenCode is an alternative backend for the Function Generation Agent (FGA); it
+does not replace CURATE's planning, approval, deployment, or output-review agents.
+The responsibilities are split as follows:
+
+```text
+Bedrock or Anthropic
+  -> designs the workflow and data-flow DAG
+  -> selects, adapts, and reviews function specifications
+  -> handles deployment coordination and output review
+
+OpenCode + its selected model (for example, local Ollama)
+  -> writes the Python function implementations
+  -> runs them against CURATE's local FaaSr stubs
+  -> repairs a function when local validation fails
+```
+
+The end-to-end flow is:
+
+```text
+User request
+    |
+    v
+Workflow and function planning (Bedrock by default, or Anthropic)
+    |
+    v
+Function Generation Agent
+    |-- default: Claude Code SDK
+    `-- --opencode: OpenCode -> configured provider/model
+    |
+    v
+Independent FaaSr stub test -> repair loop (up to three attempts)
+    |
+    v
+Gate 3 human code approval
+    |
+    v
+Existing GitHub Actions deployment and Gate 5 output review
+```
+
+`FAASR_OPENCODE_MODEL` accepts any model identifier supported by the user's
+OpenCode installation, in `provider/model` form. This makes the coding step
+independent of the planning provider: for example, Bedrock can plan the workflow
+while `ollama/curate-ornith:9b` writes the functions locally. When no model is set,
+OpenCode uses its configured default.
+
+For each generated function, CURATE creates a temporary workspace containing the
+workflow context, function specification, neighboring code, test data, and FaaSr
+stubs. OpenCode can edit and run commands only in that workspace. CURATE removes
+GitHub and S3 deployment credentials from the OpenCode subprocess, independently
+reruns the required stub test, and sends failures back for repair. After approval,
+the existing deployment code, not OpenCode, uploads and invokes the workflow.
+
+Because the other CURATE agents still use Bedrock or Anthropic, a complete
+`faasr-agents --opencode` run requires one of those planner credentials. A direct
+OpenCode/Ollama function-generation test does not require them.
 
 ## Output
 

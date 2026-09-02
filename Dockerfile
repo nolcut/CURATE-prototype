@@ -8,10 +8,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential git curl ca-certificates pkg-config libgomp1 nano \
     && rm -rf /var/lib/apt/lists/*
 
-# claude-agent-sdk spawns this CLI as a subprocess (src/faasr_agents/agents/fga.py).
-# Pinned: `latest` makes builds irreproducible and can drift past the version the
-# SDK checks for on connect.
-RUN npm install -g @anthropic-ai/claude-code@2.1.220
+# The FGA can use either Claude Code SDK or OpenCode as its coding-agent backend.
+# Pin both CLIs so container builds stay reproducible.
+RUN npm install -g @anthropic-ai/claude-code@2.1.220 opencode-ai@1.18.21
 
 # uv as a static binary (the Node base has no Python); uv then provisions CPython 3.13
 COPY --from=ghcr.io/astral-sh/uv:0.12.1 /uv /usr/local/bin/uv

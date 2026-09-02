@@ -26,7 +26,8 @@ downloads/
 debug-outputs/
 synthetic_inputs/
 pyadm1/
-tests/
+tests/*
+!tests/test_opencode_backend.py
 src/faasr_agents/catalog/data/*.json
 src/faasr_agents/catalog/workflows/*.json
 !src/faasr_agents/catalog/data/.gitkeep

@@ -35,6 +35,11 @@ selected_tier = "sonnet"
 # --anthropic-api flag — ANTHROPIC_API_KEY in the env is never auto-detected.
 selected_provider = "bedrock"
 
+# The function-generation backend is independent from the LLM provider used by
+# WCA/FCA/WDA. Claude Code SDK remains the historical default.
+FGA_BACKENDS = {"claude-code", "opencode"}
+selected_fga_backend = "claude-code"
+
 
 def set_model_tier(tier: str) -> None:
     """Select the model tier ('opus' or 'sonnet') for subsequent get_llm() calls."""
@@ -56,9 +61,29 @@ def set_provider(provider: str) -> None:
     selected_provider = provider
 
 
+def set_fga_backend(backend: str) -> None:
+    """Select the coding-agent backend used by the Function Generation Agent."""
+    if backend not in FGA_BACKENDS:
+        raise ValueError(
+            f"Unknown FGA backend '{backend}'; expected one of {sorted(FGA_BACKENDS)}"
+        )
+    global selected_fga_backend
+    selected_fga_backend = backend
+
+
+def get_fga_backend() -> str:
+    """Return the coding-agent backend selected for function generation."""
+    return selected_fga_backend
+
+
 def using_anthropic() -> bool:
     """True when the CLI opted into the Anthropic API via --anthropic-api."""
     return selected_provider == "anthropic"
+
+
+def using_opencode() -> bool:
+    """True when OpenCode was selected as the function-generation backend."""
+    return get_fga_backend() == "opencode"
 
 
 def get_default_model() -> str:

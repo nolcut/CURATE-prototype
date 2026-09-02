@@ -11,6 +11,9 @@ Two cost sources feed the run accounting:
 * The Claude Agent SDK (`agents/fga.py`) returns an exact provider-computed
   `total_cost_usd` — that path uses `record_sdk_usage` and does not touch this
   table.
+* OpenCode's JSON event stream can report tokens and provider-computed cost for
+  each completed step. That path uses `record_opencode_usage` and also does not
+  touch this table.
 
 Normalization invariant: UsageRecord.input_tokens is ALWAYS the cache-inclusive
 total input (uncached + cache reads + cache writes); the cache_read_tokens /
@@ -216,6 +219,33 @@ def record_sdk_usage(result, agent: str, model: str = ""):
         cache_write_tokens=cache_write,
         cost_usd=float(getattr(result, "total_cost_usd", 0.0) or 0.0),
         source="sdk",
+    )
+    _RUN_RECORDS.append(rec)
+    return rec
+
+
+def record_opencode_usage(
+    *,
+    agent: str,
+    model: str,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    cache_read_tokens: int = 0,
+    cache_write_tokens: int = 0,
+    cost_usd: float = 0.0,
+):
+    """Record one usage step reported by OpenCode's JSON event stream."""
+    from faasr_agents.models import UsageRecord
+
+    rec = UsageRecord(
+        agent=agent,
+        model=model,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=cache_read_tokens,
+        cache_write_tokens=cache_write_tokens,
+        cost_usd=cost_usd,
+        source="opencode",
     )
     _RUN_RECORDS.append(rec)
     return rec
