@@ -23,9 +23,23 @@ def validate_faasr_json(workflow_dict: dict) -> tuple[bool, Optional[str]]:
     try:
         try:
             validate_json(workflow_dict)
-            check_dag(workflow_dict)
+            actions = workflow_dict.get("ActionList") or {}
+            entry = workflow_dict.get("FunctionInvoke")
+            only_action = next(iter(actions.values()), {}) if len(actions) == 1 else {}
+            invoke_next = only_action.get("InvokeNext", [])
+
+            # FaaSr_py's graph builder records nodes only while traversing edges,
+            # so check_dag raises KeyError for the valid one-node/no-edge case.
+            if len(actions) == 1 and not invoke_next:
+                if entry not in actions:
+                    return False, "FunctionInvoke does not refer to a valid function"
+            else:
+                check_dag(workflow_dict)
         except SystemExit as e:
             return False, "\n".join(captured) or f"Validation failed (exit {e.code})"
+        except Exception as e:
+            detail = "\n".join(captured)
+            return False, detail or f"Validation failed ({type(e).__name__}: {e})"
         return True, None
     finally:
         faasr_logger.removeHandler(handler)

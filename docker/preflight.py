@@ -11,6 +11,7 @@ count as configured -- the check agrees with what the CLI actually sees.
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -53,11 +54,16 @@ def _set(name: str) -> bool:
 def _problems(argv: list[str]) -> list[tuple[str, str]]:
     found: list[tuple[str, str]] = []
 
-    # LLM credentials. Bedrock is the default; --anthropic-api opts into the
-    # direct Anthropic API and is the ONLY case where ANTHROPIC_API_KEY is used.
-    if "--anthropic-api" in argv:
+    # LLM credentials. Bedrock is the default; --anthropic-api / --openai-api
+    # opt into direct provider APIs and are the only cases where those keys are used.
+    if "--anthropic-api" in argv and "--openai-api" in argv:
+        found.append(("LLM_PROVIDER", "--anthropic-api and --openai-api are mutually exclusive"))
+    elif "--anthropic-api" in argv:
         if not _set("ANTHROPIC_API_KEY"):
             found.append(("ANTHROPIC_API_KEY", "required by --anthropic-api"))
+    elif "--openai-api" in argv:
+        if not _set("OPENAI_API_KEY"):
+            found.append(("OPENAI_API_KEY", "required by --openai-api"))
     elif not (
         _set("BEDROCK_API_KEY")
         or (_set("AWS_ACCESS_KEY_ID") and _set("AWS_SECRET_ACCESS_KEY"))
@@ -67,6 +73,19 @@ def _problems(argv: list[str]) -> list[tuple[str, str]]:
             "BEDROCK_API_KEY",
             "or AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY, or AWS_PROFILE",
         ))
+
+    # OpenCode is an independent FGA backend and can be combined with any of
+    # the planner-provider choices above.
+    if "--opencode" in argv:
+        opencode_bin = os.environ.get("FAASR_OPENCODE_BIN", "opencode").strip() or "opencode"
+        if shutil.which(opencode_bin) is None:
+            found.append(("OPENCODE_CLI", "required by --opencode"))
+        model = os.environ.get("FAASR_OPENCODE_MODEL", "").strip()
+        if model and "/" not in model:
+            found.append((
+                "FAASR_OPENCODE_MODEL",
+                "must use provider/model format, e.g. ollama/qwen3-coder",
+            ))
 
     for name in ("GH_PAT", "FAASR_GH_USERNAME", "FAASR_ACTION_REPO"):
         if not _set(name):

@@ -24,6 +24,11 @@ HINTS = {
     "BEDROCK_API_KEY":       "from the Bedrock console — looks like BedrockAPIKey-xxxx (Bedrock is the default provider)",
     "AWS_REGION":            "Bedrock region, e.g. us-east-1",
     "ANTHROPIC_API_KEY":     "sk-ant-... from console.anthropic.com — ONLY used when running with --anthropic-api",
+    "OPENAI_API_KEY":        "sk-proj-... from platform.openai.com — ONLY used when running with --openai-api",
+    "FAASR_OPENAI_MODEL":    "OpenAI model for --openai-api, e.g. gpt-5",
+    "FAASR_OPENCODE_MODEL":  "OpenCode coding model in provider/model form; blank uses its configured default",
+    "FAASR_OLLAMA_BASE_URL": "Ollama OpenAI-compatible endpoint; keep the default for a local server",
+    "FAASR_OPENCODE_REASONING_EFFORT": "Ollama reasoning effort; 'none' is fastest and most reliable for tool calls",
     "GH_PAT":                "github.com → Settings → Developer settings → Personal access tokens (repo + workflow scopes)",
     "FAASR_GH_USERNAME":     "your GitHub username",
     "FAASR_ACTION_REPO":     "repo where FaaSr function code will be pushed (must exist)",
@@ -34,9 +39,19 @@ HINTS = {
     "S3_SecretKey":          "corresponding secret key",
 }
 
-OPTIONAL = {"ANTHROPIC_API_KEY"}
+OPTIONAL = {
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "FAASR_OPENAI_MODEL",
+    "FAASR_OPENCODE_MODEL",
+    "FAASR_OLLAMA_BASE_URL",
+    "FAASR_OPENCODE_REASONING_EFFORT",
+}
 DEFAULTS = {
     "AWS_REGION":        "us-east-1",
+    "FAASR_OPENAI_MODEL": "gpt-5",
+    "FAASR_OLLAMA_BASE_URL": "http://127.0.0.1:11434/v1",
+    "FAASR_OPENCODE_REASONING_EFFORT": "none",
     "FAASR_S3_ENDPOINT": "https://s3.amazonaws.com",
     "FAASR_S3_REGION":   "us-east-1",
 }

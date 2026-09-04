@@ -11,8 +11,9 @@ import time
 
 import boto3
 import requests
-from FaaSr_py.helpers import graph_functions as faasr_gf
 from github import Github
+
+from faasr_agents.faasr.validate import validate_faasr_json
 
 logging.basicConfig(
     level=logging.INFO,
@@ -979,14 +980,13 @@ def main(workflow_data: dict | None = None, workflow_file: str | None = None):
             workflow_file = args.workflow_file
         workflow_data = read_workflow_file(workflow_file)
 
-    workflow_data.setdefault("_workflow_file", workflow_file or "<in-memory>")
-
     logger.info("Validating workflow for cycles and unreachable states...")
-    try:
-        faasr_gf.check_dag(workflow_data)
-        logger.info("Workflow validation passed")
-    except SystemExit:
-        logger.info("Workflow validation failed - check logs for details")
+    is_valid, validation_error = validate_faasr_json(workflow_data)
+    if not is_valid:
+        raise ValueError(f"Workflow validation failed: {validation_error}")
+    logger.info("Workflow validation passed")
+
+    workflow_data.setdefault("_workflow_file", workflow_file or "<in-memory>")
 
     verify_containers(workflow_data)
 
